@@ -1,0 +1,7 @@
+output
+fda_argos
+*.sam
+*.bam
+*.fasta
+*.db-shm
+*.db-wal
