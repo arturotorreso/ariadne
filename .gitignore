@@ -5,3 +5,4 @@ fda_argos
 *.fasta
 *.db-shm
 *.db-wal
+.git_token.txt
