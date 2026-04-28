@@ -102,5 +102,11 @@ class SequenceEmbedder:
         c_flat = c.reshape(batch_size, -1)
         embeddings = torch.cat((c_flat.real, c_flat.imag), dim=1)
         
+        # Force the CPU to wait until the GPU finishes the math
+        # to prevent cross-read memory contamination!
+        # Go back to this if there's an issue with result's headers.
+        # if self.device.type == 'cuda':
+        #     torch.cuda.synchronize(self.device)
+
         # Pull back to CPU for FAISS
         return embeddings.cpu().numpy().astype(np.float32)

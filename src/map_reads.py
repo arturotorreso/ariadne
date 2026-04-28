@@ -33,7 +33,9 @@ def main():
     print(f"  -> Output: {args.output}")
     print(f"  -> Stride: {args.stride}bp")
     
-    fq = pyfastx.Fastq(args.fastq)
+    # build_index=False forces pyfastx to stream the text file directly,
+    # completely ignoring any stale .fxi caching files.
+    fq = pyfastx.Fastq(args.fastq, build_index=False)
     
     total_reads = 0
     total_hits_written = 0
@@ -43,8 +45,24 @@ def main():
         # Changed Chunk_Num to Hit_Rank since we aggregate per read now
         out_f.write("Read_ID\tHit_Rank\tTarget_Header\tPosition\tTarget_ID\tMismatches\tCosine_Sim\n")
         
-        for read in fq:
-            batch.append({'id': read.name, 'seq': read.seq})
+        # for read in fq:
+        #     batch.append({'id': read.name, 'seq': read.seq})
+            
+        #     if len(batch) >= args.batch_size:
+        #         results = mapper.map_reads(batch, query_stride=args.stride, k=args.top_k)
+                
+        #         for res in results:
+        #             read_id = res['read_id']
+        #             for hit_rank, hit in enumerate(res['hits']):
+        #                 pos = hit.get('start_pos', 'N/A')
+        #                 out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit['faiss_id']}\t{hit['mismatches']}\t{hit['cosine_sim']:.4f}\n")
+        #                 total_hits_written += 1
+                        
+        #         total_reads += len(batch)
+        #         print(f"  -> Processed {total_reads:,} reads...", flush=True)
+        #         batch = []
+        for name, seq, qual in fq:
+            batch.append({'id': name, 'seq': seq})
             
             if len(batch) >= args.batch_size:
                 results = mapper.map_reads(batch, query_stride=args.stride, k=args.top_k)
