@@ -23,9 +23,16 @@ class MetagenomicMapper:
         self.embedder = SequenceEmbedder(device=self.device)
         
         # 3. FAISS Index & Memory Mapping
-        print(f"[Mapper] Connecting to FAISS index...")
-        self.index = faiss.read_index(index_path)
+        print(f"[Mapper] Connecting to FAISS index with MMAP")
         
+        #### Loading index ####
+
+        # Without memory mapping
+        # self.index = faiss.read_index(index_path)
+        
+        # Memory mapping
+        self.index = faiss.read_index(index_path, faiss.IO_FLAG_MMAP)
+
         # I have commented this here because it keep memory crashing the test dataset
         # if self.device == 'cuda':
         #     self.res = faiss.StandardGpuResources()
