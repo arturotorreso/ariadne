@@ -9,12 +9,13 @@ class FaissIndexer:
         self.use_gpu = use_gpu
         
         # 1. Build the Base CPU Index 
-        # IVFFlat = Clustered lookup + Uncompressed raw vectors!
+        # IVFSQ8 = Clustered lookup + 8-bit scalar quantized vectors (4x compression)!
         self.quantizer = faiss.IndexFlatIP(self.embedding_dim)
-        self.index = faiss.IndexIVFFlat(
+        self.index = faiss.IndexIVFScalarQuantizer(
             self.quantizer, 
             self.embedding_dim, 
             self.nlist, 
+            faiss.ScalarQuantizer.QT_8bit,
             faiss.METRIC_INNER_PRODUCT
         )
         

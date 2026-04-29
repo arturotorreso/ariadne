@@ -1,0 +1,17 @@
+Read_ID                                  Hit_Rank  Target_Header      Position  Target_ID  Mismatches  Cosine_Sim
+read_0|TRUTH:JAHWJD010000006.1|POS:3701  0         JAHWJD010000006.1  3750      739257     0           1.0000
+read_0|TRUTH:JAHWJD010000006.1|POS:3701  1         JAHWJD010000006.1  3800      739258     0           1.0000
+read_0|TRUTH:JAHWJD010000006.1|POS:3701  2         JAHWJD010000006.1  3700      739256     3           0.9741
+read_1|TRUTH:CP077342.1|POS:2756039      0         CP077342.1         2756050   1686678    0           1.0000
+read_1|TRUTH:CP077342.1|POS:2756039      1         CP077342.1         2756100   1686679    0           1.0000
+read_1|TRUTH:CP077342.1|POS:2756039      2         CP069528.1         3164550   987360     9           0.9117
+read_2|TRUTH:NZ_PDLH01000006.1|POS:2692  0         NZ_PDLH01000006.1  2700      3034856    0           1.0000
+read_2|TRUTH:NZ_PDLH01000006.1|POS:2692  1         NZ_PDLH01000006.1  2750      3034857    0           1.0000
+read_2|TRUTH:NZ_PDLH01000006.1|POS:2692  2         NZ_CP083623.1      1769450   1144625    81          0.1858
+read_3|TRUTH:NZ_CP065654.1|POS:6155      0         NZ_CP065654.1      6200      1547952    0           1.0000
+read_3|TRUTH:NZ_CP065654.1|POS:6155      1         NZ_CP065654.1      6250      1547953    0           1.0000
+read_3|TRUTH:NZ_CP065654.1|POS:6155      2         NZ_CP065654.1      10600     1548040    0           1.0000
+read_4|TRUTH:CP026961.1|POS:2250997      0         CP026961.1         2251000   3022346    0           1.0000
+read_4|TRUTH:CP026961.1|POS:2250997      1         JYBA02000001.1     573200    1302863    0           1.0000
+read_4|TRUTH:CP026961.1|POS:2250997      2         CP026961.1         2251050   3022347    0           1.0000
+
