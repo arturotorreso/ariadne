@@ -1,5 +1,6 @@
 output
 fda_argos
+tests
 *.sam
 *.bam
 *.fasta
