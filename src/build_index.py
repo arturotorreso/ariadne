@@ -147,11 +147,11 @@ if __name__ == '__main__':
     
     # Pointing to your specific fda_argos folder
     # FASTA_INPUT = os.path.join(project_root, "fda_argos", "fda_argos.fa")
-    FASTA_INPUT = os.path.join(project_root, "fda_argos", "fda_argos_subsampled.fa")
+    FASTA_INPUT = os.path.join(project_root, "fda_argos", "fda_argos.fa")
 
     # We will create an 'output' folder in your root directory for the database artifacts
-    SQLITE_OUTPUT = os.path.join(project_root, "output", "fda_argos.db")
-    FAISS_OUTPUT = os.path.join(project_root, "output", "fda_argos.index")
+    SQLITE_OUTPUT = os.path.join(project_root, "fda_argos_index", "fda_argos.db")
+    FAISS_OUTPUT = os.path.join(project_root, "fda_argos_index", "fda_argos.index")
     
     os.makedirs(os.path.dirname(SQLITE_OUTPUT), exist_ok=True)
     

@@ -7,3 +7,4 @@ tests
 *.db-shm
 *.db-wal
 .git_token.txt
+__pycache__
