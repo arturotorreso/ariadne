@@ -1,6 +1,9 @@
 output
 fda_argos
 tests
+*.tsv
+*.csv
+*.txt
 *.sam
 *.bam
 *.fasta

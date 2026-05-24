@@ -40,7 +40,7 @@ def estimate_database_parameters(file_path, window_size, stride, max_ram_gb=64):
     return estimated_n, nlist, target_t, sampling_fraction
 
 # Added m as a parameter defaulting to 256
-def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, batch_size=100000):
+def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, batch_size=100000, train_mode="auto", quantizer="SQ8", m=128):
     start_time = time.time()
     
     print(f"\n[1/5] Analyzing Database: {fasta_path}")
@@ -62,7 +62,7 @@ def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, 
     print(f"[Hardware] FAISS initialized on: {'GPU' if use_faiss_gpu else 'CPU'}")
     
     # Passing the dynamic m parameter down to the indexer
-    indexer = FaissIndexer(embedding_dim=dim, nlist=nlist, use_gpu=use_faiss_gpu)
+    indexer = FaissIndexer(embedding_dim=dim, nlist=nlist, use_gpu=use_faiss_gpu, train_mode=train_mode, quantizer=quantizer, m=m)
     store = MetadataStore(db_path)
 
     # ==========================================
@@ -141,17 +141,24 @@ def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, 
     print(f"  -> Vector Index: {index_path}\n")
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-mode", type=str, choices=["auto", "cpu", "gpu"], default="auto")
+    parser.add_argument("--quantizer", type=str, choices=["SQ8", "PQ"], default="SQ8")
+    parser.add_argument("--m", type=int, default=128)
+    args, _ = parser.parse_known_args()
+
     # Define paths based on your architecture
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(current_dir, '..'))
     
     # Pointing to your specific fda_argos folder
     # FASTA_INPUT = os.path.join(project_root, "fda_argos", "fda_argos.fa")
-    FASTA_INPUT = os.path.join(project_root, "fda_argos", "fda_argos.fa")
+    FASTA_INPUT = os.path.join(project_root, "fda_argos", "fda_argos_subsampled.fa")
 
     # We will create an 'output' folder in your root directory for the database artifacts
-    SQLITE_OUTPUT = os.path.join(project_root, "fda_argos_index", "fda_argos.db")
-    FAISS_OUTPUT = os.path.join(project_root, "fda_argos_index", "fda_argos.index")
+    SQLITE_OUTPUT = os.path.join(project_root, "output", "fda_argos.db")
+    FAISS_OUTPUT = os.path.join(project_root, "output", "fda_argos.index")
     
     os.makedirs(os.path.dirname(SQLITE_OUTPUT), exist_ok=True)
     
@@ -162,10 +169,17 @@ if __name__ == '__main__':
         index_path=FAISS_OUTPUT,
         window_size=100,
         stride=50,
-        batch_size=100000
+        batch_size=100000,
+        train_mode=args.train_mode,
+        quantizer=args.quantizer,
+        m=args.m
     )
 
 
+
+# export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+# export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
+# python -u src/build_index.py
 
 # export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
