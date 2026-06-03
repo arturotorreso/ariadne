@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--chain", action="store_true", help="Enable spatial chaining of chunks into read-level alignments")
     parser.add_argument("--mmap", action="store_true", help="Enable memory mapping for the FAISS index (faiss.IO_FLAG_MMAP)")
     parser.add_argument("--nprobe", type=int, default=128, help="Number of Voronoi clusters to search in FAISS (default: 128)")
+    parser.add_argument("--unmapped", action="store_true", help="Include unmapped reads in the output TSV")
 
     args = parser.parse_args()
     
@@ -60,6 +61,13 @@ def main():
                 
                 for res in results:
                     read_id = res['read_id']
+                    
+                    if not res['hits'] and args.unmapped:
+                        if args.chain:
+                            out_f.write(f"{read_id}\t-1\tN/A\t-1\t-1\t-1\t0.0000\t0\t0.0\n")
+                        else:
+                            out_f.write(f"{read_id}\t-1\tN/A\t-1\t-1\t-1\t0.0000\n")
+                            
                     for hit_rank, hit in enumerate(res['hits']):
                         pos = hit.get('start_pos', 'N/A')
                         if args.chain:
@@ -76,6 +84,13 @@ def main():
             results = mapper.map_reads(batch, query_stride=args.stride, k=args.top_k, chain_alignments=args.chain)
             for res in results:
                 read_id = res['read_id']
+                
+                if not res['hits'] and args.unmapped:
+                    if args.chain:
+                        out_f.write(f"{read_id}\t-1\tN/A\t-1\t-1\t-1\t0.0000\t0\t0.0\n")
+                    else:
+                        out_f.write(f"{read_id}\t-1\tN/A\t-1\t-1\t-1\t0.0000\n")
+                        
                 for hit_rank, hit in enumerate(res['hits']):
                     pos = hit.get('start_pos', 'N/A')
                     if args.chain:

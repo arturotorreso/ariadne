@@ -17,8 +17,13 @@ def parse_fasta(fasta_path):
 
 def get_full_header(id_val, fasta_dict):
     """Looks up header, handling optional 'NZ_' prefix differences."""
+    # Defensive check to ensure we are only operating on strings
+    if not isinstance(id_val, str) or id_val == "N/A":
+        return "N/A"
+        
     if id_val in fasta_dict:
         return fasta_dict[id_val]
+        
     # Check if adding or removing 'NZ_' finds a match
     if id_val.startswith("NZ_"):
         stripped = id_val[3:]
@@ -31,7 +36,8 @@ def get_full_header(id_val, fasta_dict):
     return "N/A"
 
 def process_file(file_path, fasta_path=None):
-    df = pd.read_csv(file_path, sep='\t')
+    # keep_default_na=False prevents pandas from turning "N/A" into a NaN float
+    df = pd.read_csv(file_path, sep='\t', keep_default_na=False)
 
     def parse_read_id(read_id):
         parts = read_id.split('|')
