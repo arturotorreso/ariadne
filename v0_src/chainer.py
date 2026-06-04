@@ -6,7 +6,7 @@ class SpatialChainer:
         Groups fragmented FAISS chunk hits into contiguous biological alignments.
         
         :param window_size: The k-mer window size used in the database.
-        :param mismatch_penalty: Kept for backward compatibility; mismatch proxy is no longer used.
+        :param mismatch_penalty: Weight to subtract from the Matched Length per mismatch.
         :param cluster_tolerance: How many base pairs of projected variance to tolerate. 
                                   Setting this to ~50 allows the chain to absorb database 
                                   boundary artifacts and minor Indels automatically.
@@ -23,21 +23,17 @@ class SpatialChainer:
         """
         Evaluates a list of chunk hits for a single read and returns chained alignments.
         """
-        # 1. Project Origins & Group by Chromosome/Contig/Strand
-        by_target = defaultdict(list)
+        # 1. Project Origins & Group by Chromosome/Contig
+        by_header = defaultdict(list)
         for hit in raw_hits:
-            strand = hit.get('strand', '+')
-            if strand == '-':
-                projected_start = hit['start_pos'] - (read_length - hit['query_offset'] - self.window_size)
-            else:
-                projected_start = hit['start_pos'] - hit['query_offset']
+            projected_start = hit['start_pos'] - hit['query_offset']
             hit['projected_start'] = projected_start
-            by_target[(hit['header'], strand)].append(hit)
+            by_header[hit['header']].append(hit)
         
         chained_alignments = []
         
         # 2. 1D Clustering (Group hits that project to the same genomic origin)
-        for (header, strand), hits in by_target.items():
+        for header, hits in by_header.items():
             # Sort by projected start to sweep spatially
             hits.sort(key=lambda x: x['projected_start'])
             
@@ -71,17 +67,31 @@ class SpatialChainer:
                 best_hit = cluster[0]
                 consensus_start = best_hit['projected_start']
                 
-                # Mismatch proxy was removed; keep a simple span-based score for now.
-                alignment_score = matched_length
+                # Mismatch Proxy Calculation (Strictly Non-Overlapping Best-First)
+                total_mismatches = 0
+                covered_intervals = []
+                
+                for hit in cluster:
+                    interval = (hit['query_offset'], hit['query_offset'] + self.window_size)
+                    
+                    # Check if this hit overlaps with any already selected higher-quality anchors
+                    overlaps = any(self._intervals_overlap(interval, cov) for cov in covered_intervals)
+                    
+                    if not overlaps:
+                        total_mismatches += hit['mismatches']
+                        covered_intervals.append(interval)
+                        
+                # 4. Final Scoring: Reward length, penalize errors
+                alignment_score = matched_length - (self.mismatch_penalty * total_mismatches)
                 
                 # Only keep biologically plausible alignments (positive scores)
                 if alignment_score > 0:
                     chained_alignments.append({
                         'header': header,
                         'start_pos': consensus_start,
-                        'strand': strand,
                         'faiss_id': best_hit['faiss_id'], # The ID of the best anchor
                         'cosine_sim': best_hit['cosine_sim'], # Peak similarity
+                        'mismatches': total_mismatches,
                         'matched_length': matched_length,
                         'alignment_score': alignment_score
                     })

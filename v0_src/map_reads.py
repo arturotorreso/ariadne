@@ -11,7 +11,7 @@ def main():
     parser.add_argument("-x", "--index", required=True, help="Path to FAISS index (.index)")
     parser.add_argument("-o", "--output", required=True, help="Path to output TSV file")
     
-    # Tuning Parameters
+    # Tuning Parameters (Notice default stride is now 1)
     parser.add_argument("--stride", type=int, default=1, help="Window stride for chunking long reads (default: 1)")
     parser.add_argument("-k", "--top_k", type=int, default=3, help="Number of best matches to return per read (default: 3)")
     parser.add_argument("--batch-size", type=int, default=10000, help="Reads to process per batch (default: 10000)")
@@ -49,9 +49,9 @@ def main():
     
     with open(args.output, 'w') as out_f:
         if args.chain:
-            out_f.write("Read_ID\tHit_Rank\tTarget_Header\tPosition\tStrand\tTarget_ID\tCosine_Sim\tMatched_Len\tAlign_Score\n")
+            out_f.write("Read_ID\tHit_Rank\tTarget_Header\tPosition\tTarget_ID\tMismatches\tCosine_Sim\tMatched_Len\tAlign_Score\n")
         else:
-            out_f.write("Read_ID\tHit_Rank\tTarget_Header\tPosition\tStrand\tTarget_ID\tCosine_Sim\n")
+            out_f.write("Read_ID\tHit_Rank\tTarget_Header\tPosition\tTarget_ID\tMismatches\tCosine_Sim\n")
             
         for name, seq, qual in fq:
             batch.append({'id': name, 'seq': seq})
@@ -64,16 +64,16 @@ def main():
                     
                     if not res['hits'] and args.unmapped:
                         if args.chain:
-                            out_f.write(f"{read_id}\t-1\tN/A\t-1\t.\t-1\t0.0000\t0\t0.0\n")
+                            out_f.write(f"{read_id}\t-1\tN/A\t-1\t-1\t-1\t0.0000\t0\t0.0\n")
                         else:
-                            out_f.write(f"{read_id}\t-1\tN/A\t-1\t.\t-1\t0.0000\n")
+                            out_f.write(f"{read_id}\t-1\tN/A\t-1\t-1\t-1\t0.0000\n")
                             
                     for hit_rank, hit in enumerate(res['hits']):
                         pos = hit.get('start_pos', 'N/A')
                         if args.chain:
-                            out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit.get('strand', '.')}\t{hit['faiss_id']}\t{hit['cosine_sim']:.4f}\t{hit['matched_length']}\t{hit['alignment_score']:.1f}\n")
+                            out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit['faiss_id']}\t{hit['mismatches']}\t{hit['cosine_sim']:.4f}\t{hit['matched_length']}\t{hit['alignment_score']:.1f}\n")
                         else:
-                            out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit.get('strand', '.')}\t{hit['faiss_id']}\t{hit['cosine_sim']:.4f}\n")
+                            out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit['faiss_id']}\t{hit['mismatches']}\t{hit['cosine_sim']:.4f}\n")
                         total_hits_written += 1
                         
                 total_reads += len(batch)
@@ -87,16 +87,16 @@ def main():
                 
                 if not res['hits'] and args.unmapped:
                     if args.chain:
-                        out_f.write(f"{read_id}\t-1\tN/A\t-1\t.\t-1\t0.0000\t0\t0.0\n")
+                        out_f.write(f"{read_id}\t-1\tN/A\t-1\t-1\t-1\t0.0000\t0\t0.0\n")
                     else:
-                        out_f.write(f"{read_id}\t-1\tN/A\t-1\t.\t-1\t0.0000\n")
+                        out_f.write(f"{read_id}\t-1\tN/A\t-1\t-1\t-1\t0.0000\n")
                         
                 for hit_rank, hit in enumerate(res['hits']):
                     pos = hit.get('start_pos', 'N/A')
                     if args.chain:
-                        out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit.get('strand', '.')}\t{hit['faiss_id']}\t{hit['cosine_sim']:.4f}\t{hit['matched_length']}\t{hit['alignment_score']:.1f}\n")
+                        out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit['faiss_id']}\t{hit['mismatches']}\t{hit['cosine_sim']:.4f}\t{hit['matched_length']}\t{hit['alignment_score']:.1f}\n")
                     else:
-                        out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit.get('strand', '.')}\t{hit['faiss_id']}\t{hit['cosine_sim']:.4f}\n")
+                        out_f.write(f"{read_id}\t{hit_rank}\t{hit['header']}\t{pos}\t{hit['faiss_id']}\t{hit['mismatches']}\t{hit['cosine_sim']:.4f}\n")
                     total_hits_written += 1
             total_reads += len(batch)
             

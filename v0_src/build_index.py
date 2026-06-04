@@ -39,8 +39,8 @@ def estimate_database_parameters(file_path, window_size, stride, max_ram_gb=64):
     
     return estimated_n, nlist, target_t, sampling_fraction
 
-# pq_m is the FAISS PQ subquantizer count; RotorMap uses rotor_m internally.
-def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, batch_size=100000, train_mode="auto", quantizer="SQ8", pq_m=64):
+# Added m as a parameter defaulting to 256
+def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, batch_size=100000, train_mode="auto", quantizer="SQ8", m=128):
     start_time = time.time()
     
     print(f"\n[1/5] Analyzing Database: {fasta_path}")
@@ -54,15 +54,15 @@ def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"[Hardware] PyTorch initialized on: {device.upper()}")
     
-    embedder = SequenceEmbedder(device=device, window_size=window_size)
+    embedder = SequenceEmbedder(device=device)
     dim = embedder.embedding_dim # Dynamically grabs 768
     
     # Initialize FAISS with the GPU flag
     use_faiss_gpu = (device == 'cuda')
     print(f"[Hardware] FAISS initialized on: {'GPU' if use_faiss_gpu else 'CPU'}")
     
-    # Passing the FAISS PQ parameter down to the indexer
-    indexer = FaissIndexer(embedding_dim=dim, nlist=nlist, use_gpu=use_faiss_gpu, train_mode=train_mode, quantizer=quantizer, pq_m=pq_m)
+    # Passing the dynamic m parameter down to the indexer
+    indexer = FaissIndexer(embedding_dim=dim, nlist=nlist, use_gpu=use_faiss_gpu, train_mode=train_mode, quantizer=quantizer, m=m)
     store = MetadataStore(db_path)
 
     # ==========================================
@@ -145,8 +145,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-mode", type=str, choices=["auto", "cpu", "gpu"], default="auto")
     parser.add_argument("--quantizer", type=str, choices=["SQ8", "PQ"], default="SQ8")
-    parser.add_argument("--pq-m", dest="pq_m", type=int, default=64)
-    parser.add_argument("--m", dest="pq_m", type=int, help=argparse.SUPPRESS) # Backward-compatible alias
+    parser.add_argument("--m", type=int, default=128)
     args, _ = parser.parse_known_args()
 
     # Define paths based on your architecture
@@ -173,7 +172,7 @@ if __name__ == '__main__':
         batch_size=100000,
         train_mode=args.train_mode,
         quantizer=args.quantizer,
-        pq_m=args.pq_m
+        m=args.m
     )
 
 

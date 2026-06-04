@@ -3,15 +3,12 @@ import numpy as np
 import torch
 
 class FaissIndexer:
-    def __init__(self, embedding_dim, nlist=1, use_gpu=False, train_mode="auto", quantizer="SQ8", pq_m=64, m=None):
+    # Removed 'm' because we are storing raw uncompressed vectors
+    def __init__(self, embedding_dim, nlist=1, use_gpu=False, train_mode="auto", quantizer="SQ8", m=128):
         self.embedding_dim = embedding_dim
         self.nlist = nlist
         self.use_gpu = use_gpu
         self.train_mode = train_mode
-        # Backward-compatible alias. Prefer pq_m to avoid confusion with RotorMap m.
-        if m is not None:
-            pq_m = m
-        self.pq_m = pq_m
         
         # 1. Build the Base CPU Index 
         # IVFSQ8 = Clustered lookup + 8-bit scalar quantized vectors (4x compression)!
@@ -21,7 +18,7 @@ class FaissIndexer:
                 self.quantizer,
                 self.embedding_dim,
                 self.nlist,
-                self.pq_m,
+                m,
                 8, # 8 bits per subquantizer
                 faiss.METRIC_INNER_PRODUCT
             )

@@ -8,10 +8,8 @@ from embedder import SequenceEmbedder
 from chainer import SpatialChainer
 
 class MetagenomicMapper:
-    def __init__(self, db_path, index_path, window_size=100, use_gpu=None, use_mmap=False, nprobe=128, search_reverse_complement=True):
+    def __init__(self, db_path, index_path, window_size=100, use_gpu=None, use_mmap=False, nprobe=128):
         self.window_size = window_size
-        self.search_reverse_complement = search_reverse_complement
-        self._rc_table = str.maketrans("ACGTNacgtn", "TGCANtgcan")
         
         # 1. Hardware Toggle
         if use_gpu is None:
@@ -23,7 +21,7 @@ class MetagenomicMapper:
         
         # 2. Embedder (Pure RotorMap Math)
         # Use the GPU for rapid sequence embedding
-        self.embedder = SequenceEmbedder(device=self.device, window_size=self.window_size)
+        self.embedder = SequenceEmbedder(device=self.device)
         
         # 3. FAISS Index & Memory Mapping
         print(f"[Mapper] Connecting to FAISS index (MMAP={use_mmap})")
@@ -60,9 +58,6 @@ class MetagenomicMapper:
         except RuntimeError:
             print(f"  -> [Warning] Database is too small for nprobe={nprobe}. Falling back to exhaustive search.")
 
-    def _reverse_complement(self, sequence):
-        return sequence.translate(self._rc_table)[::-1].upper()
-
     def _chunk_sequence(self, sequence, stride):
         """Dynamically slices a sequence into windows and tracks their offset."""
         chunks = []
@@ -81,12 +76,10 @@ class MetagenomicMapper:
         """
         Sweeps across the read to find perfect phase-locks, then aggregates 
         and returns the absolute best hits. Can chain hits spatially.
-        Searches both query strands when search_reverse_complement=True.
         """
         all_chunks = []
         chunk_offsets = []
         chunk_to_read_map = [] 
-        chunk_strands = []
         read_lengths = {}
         
         # 1. Read Chunking Sweep
@@ -97,13 +90,6 @@ class MetagenomicMapper:
                 all_chunks.append(chunk)
                 chunk_offsets.append(offset)
                 chunk_to_read_map.append(read['id'])
-                chunk_strands.append('+')
-
-                if self.search_reverse_complement:
-                    all_chunks.append(self._reverse_complement(chunk))
-                    chunk_offsets.append(offset)
-                    chunk_to_read_map.append(read['id'])
-                    chunk_strands.append('-')
                 
         if not all_chunks:
             return []
@@ -132,12 +118,13 @@ class MetagenomicMapper:
                 if hit_id == -1: continue
                     
                 cosine_sim = float(distances[i][j])
+                mismatches = max(0, int(round(self.window_size * (1.0 - cosine_sim))))
                 meta = metadata_map.get(hit_id, {'header': 'UNKNOWN', 'start_pos': 0})
                 
                 read_results[read_id].append({
                     'faiss_id': hit_id,
                     'cosine_sim': cosine_sim,
-                    'strand': chunk_strands[i],
+                    'mismatches': mismatches,
                     'header': meta['header'],
                     'start_pos': meta['start_pos'],
                     'query_offset': chunk_offsets[i] # Required for Chainer
@@ -162,7 +149,7 @@ class MetagenomicMapper:
                 unique_targets = {}
                 filtered_hits = []
                 for hit in sorted_hits:
-                    target_key = (hit['header'], hit['start_pos'], hit['strand'])
+                    target_key = (hit['header'], hit['start_pos'])
                     if target_key not in unique_targets:
                         unique_targets[target_key] = True
                         filtered_hits.append(hit)
