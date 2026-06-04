@@ -1,5 +1,8 @@
 import pyfastx
 
+from manifest import compute_window_layout
+
+
 def sliding_window_fasta(
     file_path,
     window_size,
@@ -8,73 +11,83 @@ def sliding_window_fasta(
     include_terminal_window=True,
     index_short_contigs=True,
     min_short_contig_len=50,
-    pad_short_contigs=True
+    pad_short_contigs=True,
 ):
     """
     Generator that streams a FASTA file and yields batches of sequence windows.
 
-    Windowing policy:
-      1. Emit regular stride-spaced full-length windows.
-      2. If the stride grid misses the contig end, emit one extra terminal
-         full-length window ending exactly at seq_len.
-      3. For short contigs, optionally emit one N-padded window when the
-         contig is long enough to be informative. The metadata keeps the true
-         biological end position rather than the padded length.
+    Window emission order is intentionally matched to manifest.compute_window_layout:
+      1. regular stride-grid windows,
+      2. one optional terminal full-length window if the stride grid misses the end,
+      3. one optional N-padded short-contig window for informative short contigs.
+
+    Metadata stores true reference coordinates. For padded short contigs, end_pos
+    is the true contig length, not the padded window length.
     """
     sequences_batch = []
     metadata_batch = []
 
     def append_window(header, window_seq, start_pos, end_pos):
-        """Append one sequence window and its biological coordinates."""
         sequences_batch.append(window_seq)
         metadata_batch.append((header, start_pos, end_pos))
 
-    # build_index=False is CRITICAL here. It prevents pyfastx from trying
-    # to build a massive SQLite index of RefSeq on your hard drive.
+    def maybe_yield_batch():
+        if len(sequences_batch) == batch_size:
+            out_seq = list(sequences_batch)
+            out_meta = list(metadata_batch)
+            sequences_batch.clear()
+            metadata_batch.clear()
+            return out_seq, out_meta
+        return None
+    
+    # build_index=False is CRITICAL here. It prevents pyfastx from trying 
+    # to build a massive SQLite index of RefSeq on your hard drive. 
     # It forces pyfastx to act as a pure, lightweight stream.
     for name, seq in pyfastx.Fasta(file_path, build_index=False):
         seq_len = len(seq)
+        layout = compute_window_layout(
+            seq_len,
+            window_size,
+            stride,
+            include_terminal_window=include_terminal_window,
+            index_short_contigs=index_short_contigs,
+            min_short_contig_len=min_short_contig_len,
+            pad_short_contigs=pad_short_contigs,
+        )
 
-        # Short-contig policy: retain sufficiently informative short contigs.
-        # Padded N bases preserve the fixed embedding length and are masked by
-        # the embedder, so they should not contribute artificial A-like signal.
-        if seq_len < window_size:
-            if index_short_contigs and seq_len >= min_short_contig_len:
-                window_seq = seq.ljust(window_size, 'N') if pad_short_contigs else seq
-                append_window(name, window_seq, 0, seq_len)  # end_pos is the true contig length.
-
-                if len(sequences_batch) == batch_size:
-                    yield sequences_batch, metadata_batch
-                    sequences_batch = []
-                    metadata_batch = []
+        if layout["n_windows"] == 0:
             continue
 
-        last_start = None
+        if layout["is_short_contig"]:
+            # Short references are padded to the embedding window length, but
+            # the metadata keeps the true coordinate span [0, seq_len]. The
+            # embedder masks N, so padded positions do not add artificial signal.
+            window_seq = seq[0:seq_len].ljust(window_size, 'N')
+            append_window(name, window_seq, 0, seq_len)
+            batch = maybe_yield_batch()
+            if batch is not None:
+                yield batch
+            continue
 
-        # Sliding window over the current chromosome/contig. This bounded range
-        # emits full-length windows only; terminal-tail coverage is handled below.
-        for start_pos in range(0, seq_len - window_size + 1, stride):
+        # Regular stride-grid windows. These always have exactly window_size bp.
+        for ordinal in range(layout["regular_window_count"]):
+            start_pos = ordinal * stride
             end_pos = start_pos + window_size
-            window_seq = seq[start_pos:end_pos]
-            append_window(name, window_seq, start_pos, end_pos)
-            last_start = start_pos
+            append_window(name, seq[start_pos:end_pos], start_pos, end_pos)
+            batch = maybe_yield_batch()
+            if batch is not None:
+                yield batch
 
-            if len(sequences_batch) == batch_size:
-                yield sequences_batch, metadata_batch
-                sequences_batch = []
-                metadata_batch = []
-
-        # Terminal window policy: add one final full-length window ending at
-        # seq_len if the stride grid did not already land exactly there.
-        if include_terminal_window:
-            terminal_start = seq_len - window_size
-            if last_start != terminal_start:
-                append_window(name, seq[terminal_start:seq_len], terminal_start, seq_len)
-
-                if len(sequences_batch) == batch_size:
-                    yield sequences_batch, metadata_batch
-                    sequences_batch = []
-                    metadata_batch = []
+        # Add one final full-length terminal window if the stride grid did not
+        # already end exactly at the contig boundary. This avoids losing the tail
+        # while also avoiding duplicate terminal windows.
+        if layout["has_terminal_window"]:
+            start_pos = seq_len - window_size
+            end_pos = seq_len
+            append_window(name, seq[start_pos:end_pos], start_pos, end_pos)
+            batch = maybe_yield_batch()
+            if batch is not None:
+                yield batch
 
     # Yield any remaining sequences that didn't perfectly fill the final batch.
     if sequences_batch:

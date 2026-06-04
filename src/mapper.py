@@ -6,6 +6,8 @@ import sqlite3
 
 from embedder import SequenceEmbedder
 from chainer import SpatialChainer
+from manifest import CompactMetadataLookup
+
 
 class MetagenomicMapper:
     def __init__(self, db_path, index_path, window_size=100, use_gpu=None, use_mmap=False, nprobe=128, search_reverse_complement=True, include_terminal_window=True):
@@ -45,11 +47,20 @@ class MetagenomicMapper:
         
         self.set_nprobe(nprobe)
         
-        # 4. SQLite Metadata (Batched Read-Only Connection)
-        print(f"[Mapper] Connecting to SQLite metadata...")
+        # 4. Metadata Connection
+        # New compact-manifest databases store one row per contig, not one row
+        # per window. Fall back to the legacy per-window table when needed so old
+        # test indexes can still be inspected.
+        print(f"[Mapper] Connecting to metadata database...")
         db_uri = f"file:{os.path.abspath(db_path)}?mode=ro"
         self.conn = sqlite3.connect(db_uri, uri=True)
         self.conn.row_factory = sqlite3.Row
+        self.compact_metadata = None
+        try:
+            self.compact_metadata = CompactMetadataLookup(db_path)
+            print("[Mapper] Using compact manifest metadata lookup.")
+        except Exception as e:
+            print(f"[Mapper] Compact manifest unavailable; using legacy metadata table. Reason: {e}")
 
     def set_nprobe(self, nprobe):
         """Adjusts the Voronoi cluster search radius safely based on DB size."""
@@ -65,19 +76,13 @@ class MetagenomicMapper:
         return sequence.translate(self._rc_table)[::-1].upper()
 
     def _chunk_sequence(self, sequence, stride):
-        """Dynamically slices a sequence into windows and tracks their offset.
-
-        Query windowing mirrors the database policy for full-length sequences:
-        emit regular stride-spaced chunks, then add one terminal chunk if the
-        stride grid misses the read end. Short reads are still padded with N;
-        the embedder masks N so padded positions do not contribute signal.
-        """
+        """Dynamically slices a sequence into windows and tracks their offset."""
         chunks = []
         offsets = []
         seq_len = len(sequence)
-
-        # Short reads are represented by one N-padded query window.
         if seq_len < self.window_size:
+            # Short reads are padded with N. The embedder masks N, so padded
+            # positions do not contribute artificial signal.
             chunks.append(sequence.ljust(self.window_size, 'N'))
             offsets.append(0)
         else:
@@ -87,18 +92,15 @@ class MetagenomicMapper:
                 offsets.append(i)
                 last_start = i
 
-            # Add a final full-length terminal chunk if the stride did not
-            # already place a chunk ending exactly at the read end. This avoids
-            # missing the 3' tail while preventing duplicate terminal chunks.
-            if self.include_terminal_window:
-                terminal_start = seq_len - self.window_size
-                if last_start != terminal_start:
-                    chunks.append(sequence[terminal_start:seq_len])
-                    offsets.append(terminal_start)
-
+            # Add one final full-length terminal query window if the stride grid
+            # did not already land on the read end. Avoid duplicate terminal chunks.
+            terminal_start = seq_len - self.window_size
+            if self.include_terminal_window and last_start != terminal_start:
+                chunks.append(sequence[terminal_start : seq_len])
+                offsets.append(terminal_start)
         return chunks, offsets
 
-    def map_reads(self, reads, query_stride=1, k=3, chain_alignments=False):
+    def map_reads(self, reads, query_stride=10, k=3, chain_alignments=False):
         """
         Sweeps across the read to find perfect phase-locks, then aggregates 
         and returns the absolute best hits. Can chain hits spatially.
@@ -138,7 +140,7 @@ class MetagenomicMapper:
         search_k = 20 if chain_alignments else k
         distances, indices = self.index.search(vectors, search_k)
         
-        # 4. Fast SQLite Batch Retrieval
+        # 4. Fast Metadata Retrieval
         unique_ids = list(set(indices.flatten().tolist()))
         unique_ids = [idx for idx in unique_ids if idx != -1]
         metadata_map = self._fetch_metadata_batch(unique_ids)
@@ -198,8 +200,12 @@ class MetagenomicMapper:
 
     def _fetch_metadata_batch(self, ids):
         if not ids: return {}
-        # Chunk the SQL query to prevent SQLite from crashing if 'search_k' pushes 
-        # the unique_ids past SQLite's variable limits (usually 999).
+
+        if self.compact_metadata is not None:
+            return self.compact_metadata.fetch_metadata_batch(ids)
+
+        # Legacy fallback: chunk the SQL query to prevent SQLite from crashing if
+        # search_k pushes unique_ids past SQLite's variable limits.
         ids_list = list(ids)
         result = {}
         chunk_size = 999
