@@ -40,7 +40,7 @@ def estimate_database_parameters(file_path, window_size, stride, max_ram_gb=64):
     return estimated_n, nlist, target_t, sampling_fraction
 
 # pq_m is the FAISS PQ subquantizer count; RotorMap uses rotor_m internally.
-def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, batch_size=100000, train_mode="auto", quantizer="SQ8", pq_m=64):
+def build_pipeline(fasta_path, db_path, index_path, window_size=100, stride=50, batch_size=100000, train_mode="auto", quantizer="PQ", pq_m=64):
     start_time = time.time()
     
     print(f"\n[1/5] Analyzing Database: {fasta_path}")
@@ -144,7 +144,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-mode", type=str, choices=["auto", "cpu", "gpu"], default="auto")
-    parser.add_argument("--quantizer", type=str, choices=["SQ8", "PQ"], default="SQ8")
+    parser.add_argument("--quantizer", type=str, choices=["SQ8", "PQ"], default="PQ")
     parser.add_argument("--pq-m", dest="pq_m", type=int, default=64)
     parser.add_argument("--m", dest="pq_m", type=int, help=argparse.SUPPRESS) # Backward-compatible alias
     args, _ = parser.parse_known_args()

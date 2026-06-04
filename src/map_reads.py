@@ -12,7 +12,7 @@ def main():
     parser.add_argument("-o", "--output", required=True, help="Path to output TSV file")
     
     # Tuning Parameters
-    parser.add_argument("--stride", type=int, default=1, help="Window stride for chunking long reads (default: 1)")
+    parser.add_argument("--stride", type=int, default=10, help="Window stride for chunking long reads (default: 10)")
     parser.add_argument("-k", "--top_k", type=int, default=3, help="Number of best matches to return per read (default: 3)")
     parser.add_argument("--batch-size", type=int, default=10000, help="Reads to process per batch (default: 10000)")
     parser.add_argument("--cpu-only", action="store_true", help="Force execution on CPU even if GPU is available")

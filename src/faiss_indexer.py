@@ -3,7 +3,7 @@ import numpy as np
 import torch
 
 class FaissIndexer:
-    def __init__(self, embedding_dim, nlist=1, use_gpu=False, train_mode="auto", quantizer="SQ8", pq_m=64, m=None):
+    def __init__(self, embedding_dim, nlist=1, use_gpu=False, train_mode="auto", quantizer="PQ", pq_m=64, m=None):
         self.embedding_dim = embedding_dim
         self.nlist = nlist
         self.use_gpu = use_gpu

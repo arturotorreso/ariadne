@@ -11,3 +11,5 @@ tests
 *.db-wal
 .git_token.txt
 __pycache__
+v0_src
+v1_src

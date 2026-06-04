@@ -8,9 +8,10 @@ from embedder import SequenceEmbedder
 from chainer import SpatialChainer
 
 class MetagenomicMapper:
-    def __init__(self, db_path, index_path, window_size=100, use_gpu=None, use_mmap=False, nprobe=128, search_reverse_complement=True):
+    def __init__(self, db_path, index_path, window_size=100, use_gpu=None, use_mmap=False, nprobe=128, search_reverse_complement=True, include_terminal_window=True):
         self.window_size = window_size
         self.search_reverse_complement = search_reverse_complement
+        self.include_terminal_window = include_terminal_window
         self._rc_table = str.maketrans("ACGTNacgtn", "TGCANtgcan")
         
         # 1. Hardware Toggle
@@ -64,17 +65,37 @@ class MetagenomicMapper:
         return sequence.translate(self._rc_table)[::-1].upper()
 
     def _chunk_sequence(self, sequence, stride):
-        """Dynamically slices a sequence into windows and tracks their offset."""
+        """Dynamically slices a sequence into windows and tracks their offset.
+
+        Query windowing mirrors the database policy for full-length sequences:
+        emit regular stride-spaced chunks, then add one terminal chunk if the
+        stride grid misses the read end. Short reads are still padded with N;
+        the embedder masks N so padded positions do not contribute signal.
+        """
         chunks = []
         offsets = []
         seq_len = len(sequence)
+
+        # Short reads are represented by one N-padded query window.
         if seq_len < self.window_size:
             chunks.append(sequence.ljust(self.window_size, 'N'))
             offsets.append(0)
         else:
+            last_start = None
             for i in range(0, seq_len - self.window_size + 1, stride):
                 chunks.append(sequence[i : i + self.window_size])
                 offsets.append(i)
+                last_start = i
+
+            # Add a final full-length terminal chunk if the stride did not
+            # already place a chunk ending exactly at the read end. This avoids
+            # missing the 3' tail while preventing duplicate terminal chunks.
+            if self.include_terminal_window:
+                terminal_start = seq_len - self.window_size
+                if last_start != terminal_start:
+                    chunks.append(sequence[terminal_start:seq_len])
+                    offsets.append(terminal_start)
+
         return chunks, offsets
 
     def map_reads(self, reads, query_stride=1, k=3, chain_alignments=False):
