@@ -1,12 +1,17 @@
 import bisect
+import hashlib
 import json
 import os
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timezone
 
 
+MANIFEST_VERSION = 2
 
-MANIFEST_VERSION = 1
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def compute_window_layout(
@@ -21,10 +26,10 @@ def compute_window_layout(
     """
     Compute the exact windows emitted for one contig.
 
-    This is the single source of truth for FAISS ID assignment. Keep this logic
-    synchronized with ingestion.sliding_window_fasta(...): regular stride-grid
-    windows come first, followed by one optional terminal window. Short contigs
-    can be represented by one N-padded window when they pass the minimum length.
+    This is the single source of truth for FAISS ID assignment. Regular
+    stride-grid windows come first. If the stride grid misses the contig end,
+    one optional terminal full-length window is appended. Short contigs can be
+    represented by one N-padded window when they pass the minimum length.
     """
     if window_size <= 0:
         raise ValueError("window_size must be > 0")
@@ -115,7 +120,7 @@ def _init_manifest_schema(conn):
             padded_short_contig INTEGER NOT NULL,
             stride INTEGER NOT NULL,
             window_size INTEGER NOT NULL,
-            shard_id INTEGER NOT NULL DEFAULT 0
+            shard_id INTEGER NOT NULL DEFAULT -1
         )
     """)
     cur.execute("""
@@ -123,13 +128,19 @@ def _init_manifest_schema(conn):
         ON contigs(first_faiss_id, last_faiss_id_exclusive)
     """)
     cur.execute("""
+        CREATE INDEX contigs_shard_idx
+        ON contigs(shard_id, contig_id)
+    """)
+    cur.execute("""
         CREATE TABLE shards (
             shard_id INTEGER PRIMARY KEY,
             first_faiss_id INTEGER NOT NULL,
             last_faiss_id_exclusive INTEGER NOT NULL,
             n_windows INTEGER NOT NULL,
+            n_contigs INTEGER NOT NULL,
             status TEXT NOT NULL,
             index_path TEXT,
+            tmp_index_path TEXT,
             checksum TEXT,
             ntotal_expected INTEGER,
             ntotal_observed INTEGER,
@@ -142,9 +153,8 @@ def _init_manifest_schema(conn):
 
 
 def _set_config(conn, values):
-    cur = conn.cursor()
     records = [(key, json.dumps(value)) for key, value in values.items()]
-    cur.executemany(
+    conn.executemany(
         "INSERT OR REPLACE INTO build_config (key, value) VALUES (?, ?)",
         records,
     )
@@ -155,6 +165,14 @@ def update_manifest_config(db_path, **values):
     """Update build_config entries after later build decisions such as nlist."""
     with sqlite3.connect(db_path) as conn:
         _set_config(conn, values)
+
+
+def get_manifest_config(db_path):
+    """Return build_config as a Python dictionary with JSON-decoded values."""
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT key, value FROM build_config")
+        return {key: json.loads(value) for key, value in cur.fetchall()}
 
 
 def build_manifest(
@@ -191,7 +209,7 @@ def build_manifest(
     conn = sqlite3.connect(db_path)
     try:
         _init_manifest_schema(conn)
-        created_at = datetime.now(timezone.utc).isoformat()
+        created_at = utc_now_iso()
         _set_config(conn, {
             "manifest_version": MANIFEST_VERSION,
             "created_at": created_at,
@@ -265,22 +283,12 @@ def build_manifest(
                         int(layout["padded_short_contig"]),
                         stride,
                         window_size,
-                        0,
+                        -1,
                     ),
                 )
                 total_windows = last_id
                 contig_id += 1
 
-        cur.execute(
-            """
-            INSERT INTO shards (
-                shard_id, first_faiss_id, last_faiss_id_exclusive, n_windows,
-                status, index_path, checksum, ntotal_expected, ntotal_observed
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (0, 0, total_windows, total_windows, "manifest_only", None, None, total_windows, None),
-        )
         conn.commit()
 
         summary = {
@@ -307,6 +315,306 @@ def build_manifest(
         return summary
     finally:
         conn.close()
+
+
+def get_manifest_summary(db_path):
+    config = get_manifest_config(db_path)
+    return {
+        "db_path": db_path,
+        "manifest_version": config.get("manifest_version"),
+        "input_fasta_files": config.get("input_fasta_files"),
+        "total_contigs": config.get("total_contigs", 0),
+        "total_indexed_contigs": config.get("total_indexed_contigs", 0),
+        "total_bases": config.get("total_bases", 0),
+        "total_windows": config.get("total_windows", 0),
+        "window_size": config.get("window_size"),
+        "stride": config.get("db_stride"),
+        "include_terminal_window": config.get("include_terminal_window"),
+        "index_short_contigs": config.get("index_short_contigs"),
+        "min_short_contig_len": config.get("min_short_contig_len"),
+        "pad_short_contigs": config.get("pad_short_contigs"),
+    }
+
+
+def file_sha256(path, block_size=8 * 1024 * 1024):
+    """Compute a SHA256 checksum without loading the whole index file."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(block_size), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def assign_shards(db_path, shards_dir, target_shard_windows=10_000_000, overwrite=True):
+    """
+    Assign indexed contigs to shard work units.
+
+    First implementation uses contig-boundary shards: a contig is never split.
+    If a single contig exceeds target_shard_windows, it becomes its own shard.
+    """
+    if target_shard_windows <= 0:
+        raise ValueError("target_shard_windows must be > 0")
+
+    os.makedirs(shards_dir, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        if overwrite:
+            cur.execute("DELETE FROM shards")
+            cur.execute("UPDATE contigs SET shard_id = -1")
+
+        cur.execute(
+            """
+            SELECT contig_id, first_faiss_id, last_faiss_id_exclusive, n_windows
+            FROM contigs
+            WHERE n_windows > 0
+            ORDER BY contig_id
+            """
+        )
+        contigs = [dict(row) for row in cur.fetchall()]
+        if not contigs:
+            raise ValueError("Manifest contains no indexed windows; cannot assign shards.")
+
+        shards = []
+        current = []
+        current_windows = 0
+
+        def flush_current():
+            nonlocal current, current_windows
+            if not current:
+                return
+            shard_id = len(shards)
+            first_id = current[0]["first_faiss_id"]
+            last_id = current[-1]["last_faiss_id_exclusive"]
+            shards.append({
+                "shard_id": shard_id,
+                "contigs": current,
+                "first_faiss_id": first_id,
+                "last_faiss_id_exclusive": last_id,
+                "n_windows": current_windows,
+                "n_contigs": len(current),
+            })
+            current = []
+            current_windows = 0
+
+        for row in contigs:
+            row_windows = int(row["n_windows"])
+            if current and current_windows + row_windows > target_shard_windows:
+                flush_current()
+            current.append(row)
+            current_windows += row_windows
+            if row_windows >= target_shard_windows:
+                flush_current()
+        flush_current()
+
+        for shard in shards:
+            shard_id = shard["shard_id"]
+            index_path = os.path.join(shards_dir, f"shard_{shard_id:06d}.index")
+            tmp_index_path = index_path + ".tmp"
+            cur.execute(
+                """
+                INSERT INTO shards (
+                    shard_id, first_faiss_id, last_faiss_id_exclusive,
+                    n_windows, n_contigs, status, index_path, tmp_index_path,
+                    checksum, ntotal_expected, ntotal_observed,
+                    started_at, completed_at, error_message
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    shard_id,
+                    shard["first_faiss_id"],
+                    shard["last_faiss_id_exclusive"],
+                    shard["n_windows"],
+                    shard["n_contigs"],
+                    "pending",
+                    index_path,
+                    tmp_index_path,
+                    None,
+                    shard["n_windows"],
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            contig_ids = [row["contig_id"] for row in shard["contigs"]]
+            placeholders = ",".join("?" for _ in contig_ids)
+            cur.execute(
+                f"UPDATE contigs SET shard_id = ? WHERE contig_id IN ({placeholders})",
+                [shard_id] + contig_ids,
+            )
+
+        _set_config(conn, {
+            "target_shard_windows": target_shard_windows,
+            "num_shards": len(shards),
+            "shards_dir": shards_dir,
+        })
+        conn.commit()
+        return {
+            "num_shards": len(shards),
+            "target_shard_windows": target_shard_windows,
+            "shards_dir": shards_dir,
+            "total_windows": sum(shard["n_windows"] for shard in shards),
+        }
+
+
+def get_shards(db_path):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT shard_id, first_faiss_id, last_faiss_id_exclusive,
+                   n_windows, n_contigs, status, index_path, tmp_index_path,
+                   checksum, ntotal_expected, ntotal_observed,
+                   started_at, completed_at, error_message
+            FROM shards
+            ORDER BY shard_id
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_shard(db_path, shard_id):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT shard_id, first_faiss_id, last_faiss_id_exclusive,
+                   n_windows, n_contigs, status, index_path, tmp_index_path,
+                   checksum, ntotal_expected, ntotal_observed,
+                   started_at, completed_at, error_message
+            FROM shards
+            WHERE shard_id = ?
+            """,
+            (shard_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"Shard {shard_id} does not exist in {db_path}")
+        return dict(row)
+
+
+def update_shard_status(db_path, shard_id, status, **fields):
+    fields = dict(fields)
+    fields["status"] = status
+    assignments = ", ".join(f"{key} = ?" for key in fields)
+    values = list(fields.values()) + [shard_id]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(f"UPDATE shards SET {assignments} WHERE shard_id = ?", values)
+        conn.commit()
+
+
+def validate_shard_index(index_path, expected_ntotal):
+    """
+    Return (is_valid, observed_ntotal, error_message) for a saved shard index.
+    FAISS is imported lazily so manifest-only operations do not require it.
+    """
+    if not index_path or not os.path.exists(index_path):
+        return False, None, "index file does not exist"
+    try:
+        import faiss
+        index = faiss.read_index(index_path)
+        observed = int(index.ntotal)
+        if observed != int(expected_ntotal):
+            return False, observed, f"ntotal mismatch: observed {observed}, expected {expected_ntotal}"
+        return True, observed, None
+    except Exception as exc:
+        return False, None, str(exc)
+
+
+def _load_contig_rows_for_stream(db_path, shard_id=None):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT fasta_id, path FROM fasta_files ORDER BY fasta_id")
+        fasta_files = [dict(row) for row in cur.fetchall()]
+
+        query = """
+            SELECT contig_id, fasta_id, header, contig_length,
+                   first_faiss_id, last_faiss_id_exclusive, n_windows,
+                   regular_window_count, has_terminal_window,
+                   is_short_contig, padded_short_contig,
+                   stride, window_size, shard_id
+            FROM contigs
+            WHERE n_windows > 0
+        """
+        params = []
+        if shard_id is not None:
+            query += " AND shard_id = ?"
+            params.append(shard_id)
+        query += " ORDER BY contig_id"
+        cur.execute(query, params)
+        rows = [dict(row) for row in cur.fetchall()]
+    return fasta_files, {row["contig_id"]: row for row in rows}
+
+
+def stream_windows_from_manifest(db_path, batch_size, shard_id=None):
+    """
+    Stream sequence windows and global FAISS IDs from the compact manifest.
+
+    This generator is used by both global training and shard construction. It
+    guarantees that emitted windows match manifest ID ranges, including regular
+    windows, optional terminal windows, and padded short-contig windows.
+    """
+    import pyfastx
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be > 0")
+
+    fasta_files, selected_rows = _load_contig_rows_for_stream(db_path, shard_id=shard_id)
+    seq_batch = []
+    id_batch = []
+    contig_id = 0
+
+    def append_window(window_seq, faiss_id):
+        seq_batch.append(str(window_seq).upper())
+        id_batch.append(int(faiss_id))
+        if len(seq_batch) == batch_size:
+            out_seq = list(seq_batch)
+            out_ids = list(id_batch)
+            seq_batch.clear()
+            id_batch.clear()
+            return out_seq, out_ids
+        return None
+
+    for fasta in fasta_files:
+        for header, seq in pyfastx.Fasta(fasta["path"], build_index=False):
+            row = selected_rows.get(contig_id)
+            if row is not None:
+                seq_len = int(row["contig_length"])
+                window_size = int(row["window_size"])
+                stride = int(row["stride"])
+                first_id = int(row["first_faiss_id"])
+
+                if row["is_short_contig"]:
+                    # Keep true coordinates in metadata, but embed a full-length
+                    # padded sequence. N bases are masked by the embedder.
+                    short_seq = str(seq[0:seq_len]).upper().ljust(window_size, "N")
+                    yielded = append_window(short_seq, first_id)
+                    if yielded is not None:
+                        yield yielded
+                else:
+                    regular_count = int(row["regular_window_count"])
+                    for local_ordinal in range(regular_count):
+                        start = local_ordinal * stride
+                        end = start + window_size
+                        yielded = append_window(seq[start:end], first_id + local_ordinal)
+                        if yielded is not None:
+                            yield yielded
+
+                    if row["has_terminal_window"]:
+                        terminal_start = seq_len - window_size
+                        terminal_id = first_id + regular_count
+                        yielded = append_window(seq[terminal_start:seq_len], terminal_id)
+                        if yielded is not None:
+                            yield yielded
+            contig_id += 1
+
+    if seq_batch:
+        yield list(seq_batch), list(id_batch)
 
 
 class CompactMetadataLookup:
